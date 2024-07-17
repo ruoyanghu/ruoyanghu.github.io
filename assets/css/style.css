@@ -23,19 +23,21 @@
 
   /* gradient */
 
+  /* 头像背景 */
   --bg-gradient-onyx: linear-gradient(
-    to bottom right, 
-    hsl(240, 1%, 70%) 3%, 
-    hsl(0, 6%, 76%) 97%
+    to bottom, 
+    hsl(57, 64%, 74%) 3%, 
+    hsl(189, 74%, 85%) 97%
   );
+  /* item background */
   --bg-gradient-jet: linear-gradient(
     to bottom right, 
-    hsla(240, 1%, 18%, 0.251) 0%, 
-    hsla(240, 2%, 11%, 0) 100%
-  ), hsl(240, 2%, 13%);
+    hsla(240, 29%, 95%, 0.251) 0%, 
+    hsla(120, 62%, 93%, 0) 100%
+  ), hsl(240, 55%, 78%);
   --bg-gradient-yellow-1: linear-gradient(
     to bottom right, 
-    hsl(45, 100%, 71%) 0%, 
+    hsl(286, 100%, 71%) 0%, 
     hsla(36, 100%, 69%, 0) 50%
   );
   --bg-gradient-yellow-2: linear-gradient(
@@ -45,8 +47,8 @@
   ), hsl(240, 2%, 13%);
   --border-gradient-onyx: linear-gradient(
     to bottom right, 
-    hsl(0, 0%, 25%) 0%, 
-    hsla(0, 0%, 25%, 0) 50%
+    hsl(0, 0%, 98%) 0%, 
+    hsl(240, 55%, 78%) 50%
   );
   --text-gradient-yellow: linear-gradient(
     to right, 
@@ -56,17 +58,25 @@
 
   /* solid */
 
-  --jet: hsl(0, 0%, 22%);
-  --onyx: hsl(240, 1%, 17%);
-  --eerie-black-1: hsl(240, 2%, 13%);
-  --eerie-black-2: hsl(240, 2%, 12%);
-  --smoky-black: hsl(0, 0%, 7%);
+  /* border */
+  --jet: hsl(24, 55%, 34%);
+  /* 姓名下title栏背景*/
+  --onyx: hsl(240, 77%, 48%);
+  /* --eerie-black-1: hsl(240, 2%, 13%); */
+  --eerie-black-1: hsl(240, 55%, 78%);
+  /* article background */
+  --eerie-black-2: hsl(0, 0%, 98%);
+  /* big background */
+  --smoky-black: hsl(43, 87%, 66%);
   --white-1: hsl(0, 0%, 100%);
   --white-2: hsl(0, 0%, 98%);
+  /* used in name title */
+  --dark-purple: hsl(327, 20%, 20%);
   --orange-yellow-crayola: hsl(45, 100%, 72%);
   --vegas-gold: hsl(45, 54%, 58%);
-  --light-gray: hsl(0, 0%, 84%);
-  --light-gray-70: hsla(0, 0%, 84%, 0.7);
+  /* used as content text */
+  --light-gray: hsl(328, 19%, 15%);
+  --light-gray-70: hsla(328, 19%, 15%, 0.7);
   --bittersweet-shimmer: hsl(0, 43%, 51%);
 
   /**
@@ -224,7 +234,7 @@ article.active {
 .h3,
 .h4,
 .h5 {
-  color: var(--white-2);
+  color: var(--dark-purple);
   text-transform: capitalize;
 }
 
@@ -337,7 +347,7 @@ main {
 }
 
 .info-content .name {
-  color: var(--white-2);
+  color: var(--dark-purple);
   font-size: var(--fs-3);
   font-weight: var(--fw-500);
   letter-spacing: -0.25px;
@@ -349,7 +359,7 @@ main {
   background: var(--onyx);
   font-size: var(--fs-8);
   font-weight: var(--fw-300);
-  width: max-content;
+  width: auto;
   padding: 3px 12px;
   border-radius: 8px;
 }
@@ -423,7 +433,7 @@ main {
 }
 
 .contact-info :is(.contact-link, time, address) {
-  color: var(--white-2);
+  color: var(--dark-purple);
   font-size: var(--fs-7);
 }
 
@@ -1838,7 +1848,7 @@ textarea.form-input::-webkit-resizer { display: none; }
   .avatar-box img { width: 150px; }
 
   .info-content .name {
-    white-space: nowrap;
+    white-space: normal;
     text-align: center;
   }
 
