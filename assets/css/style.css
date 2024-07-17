@@ -73,6 +73,7 @@
   /* used in name title */
   --dark-purple: hsl(327, 20%, 20%);
   --orange-yellow-crayola: hsl(45, 100%, 72%);
+  --cocoa-brown: hsl(23, 72%, 53%);
   --vegas-gold: hsl(45, 54%, 58%);
   /* used as content text */
   --light-gray: hsl(328, 19%, 15%);
@@ -469,7 +470,7 @@ main {
   bottom: 0;
   left: 0;
   width: 100%;
-  background: hsla(240, 1%, 17%, 0.75);
+  background: hsla(57, 64%, 74%, 0.25);
   backdrop-filter: blur(10px);
   border: 1px solid var(--jet);
   border-radius: 12px 12px 0 0;
@@ -495,7 +496,7 @@ main {
 .navbar-link:hover,
 .navbar-link:focus { color: var(--light-gray-70); }
 
-.navbar-link.active { color: var(--orange-yellow-crayola); }
+.navbar-link.active { color: var(--cocoa-brown); }
 
 
 
