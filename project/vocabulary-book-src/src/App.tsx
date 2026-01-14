@@ -1,10 +1,16 @@
 import type { ChangeEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { lemmatizeWord, type VerbForms } from './lib/lemmatizer'
+import { lookupWordNetDefinition } from './lib/wordnet'
 import './App.css'
 
 const MAX_TEXT_LENGTH = 60000
 const MAX_FILE_SIZE = 400 * 1024 // ~400 KB
 const DEFAULT_TOP_LIMIT = 20
+const LOCAL_STORAGE_KEY = 'vocab-known-words'
+const HISTORY_STORAGE_KEY = 'vocab-history'
+const HISTORY_LIMIT = 10
+const DICTIONARY_ENDPOINT = 'https://api.dictionaryapi.dev/api/v2/entries/en/'
 
 const FALLBACK_COMMON_WORDS = [
   'the',
@@ -365,14 +371,24 @@ type Status = {
 }
 
 type DifficultWord = {
-  word: string
+  lemma: string
   count: number
+  verbForms?: VerbForms
 }
 
 type AnalysisResult = {
   totalUnique: number
   totalOccurrences: number
   sortedWords: DifficultWord[]
+}
+
+type DefinitionMap = Record<string, string>
+
+type HistoryEntry = {
+  id: string
+  text: string
+  createdAt: number
+  summary: string
 }
 
 const buildWordSet = (words: Iterable<string>) => {
@@ -386,6 +402,82 @@ const buildWordSet = (words: Iterable<string>) => {
   return set
 }
 
+const getStoredKnownWords = (): Record<string, true> => {
+  if (typeof window === 'undefined') {
+    return {}
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(LOCAL_STORAGE_KEY)
+    if (!rawValue) {
+      return {}
+    }
+
+    const parsed = JSON.parse(rawValue) as Record<string, true> | string[]
+    if (Array.isArray(parsed)) {
+      return parsed.reduce<Record<string, true>>((acc, word) => {
+        if (typeof word === 'string' && word.trim()) {
+          acc[word.trim().toLowerCase()] = true
+        }
+        return acc
+      }, {})
+    }
+
+    return Object.keys(parsed ?? {}).reduce<Record<string, true>>((acc, key) => {
+      if (key.trim()) {
+        acc[key.trim().toLowerCase()] = true
+      }
+      return acc
+    }, {})
+  } catch (error) {
+    console.warn('Unable to read known words from storage:', error)
+    return {}
+  }
+}
+
+const getStoredHistory = (): HistoryEntry[] => {
+  if (typeof window === 'undefined') {
+    return []
+  }
+  try {
+    const rawValue = window.localStorage.getItem(HISTORY_STORAGE_KEY)
+    if (!rawValue) {
+      return []
+    }
+    const parsed = JSON.parse(rawValue) as HistoryEntry[]
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+    return parsed
+      .filter(
+        (entry) =>
+          typeof entry?.text === 'string' &&
+          typeof entry?.createdAt === 'number' &&
+          typeof entry?.summary === 'string',
+      )
+      .slice(0, HISTORY_LIMIT)
+  } catch (error) {
+    console.warn('Unable to read history from storage:', error)
+    return []
+  }
+}
+
+const fetchDictionaryApiDefinition = async (word: string) => {
+  try {
+    const response = await fetch(`${DICTIONARY_ENDPOINT}${encodeURIComponent(word)}`)
+    if (!response.ok) {
+      return null
+    }
+    const payload = await response.json()
+    const definition =
+      payload?.[0]?.meanings?.[0]?.definitions?.[0]?.definition ?? null
+    return definition
+  } catch (error) {
+    console.warn('Remote dictionary lookup failed for', word, error)
+    return null
+  }
+}
+
 function App() {
   const [inputText, setInputText] = useState('')
   const [analysis, setAnalysis] = useState<AnalysisResult | null>(null)
@@ -395,13 +487,22 @@ function App() {
     buildWordSet(FALLBACK_COMMON_WORDS),
   )
   const [isLoadingCommonWords, setIsLoadingCommonWords] = useState(true)
+  const [knownWords, setKnownWords] = useState<Record<string, true>>(() =>
+    getStoredKnownWords(),
+  )
+  const [currentPage, setCurrentPage] = useState(0)
+  const [definitions, setDefinitions] = useState<DefinitionMap>({})
+  const [definitionLoadingMap, setDefinitionLoadingMap] = useState<Record<string, true>>({})
+  const [history, setHistory] = useState<HistoryEntry[]>(() => getStoredHistory())
 
   useEffect(() => {
     let cancelled = false
 
     const loadCommonWords = async () => {
       try {
-        const response = await fetch('/data/google-10000-english-usa.txt')
+        const response = await fetch(
+          `${import.meta.env.BASE_URL}data/google-10000-english-usa.txt`,
+        )
         if (!response.ok) {
           throw new Error('File not found')
         }
@@ -449,15 +550,126 @@ function App() {
     }
   }, [])
 
-  const characterCount = inputText.length
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    try {
+      window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(knownWords))
+    } catch (error) {
+      console.warn('Unable to persist known words:', error)
+    }
+  }, [knownWords])
 
-  const displayedWords = useMemo(() => {
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    try {
+      window.localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(history))
+    } catch (error) {
+      console.warn('Unable to persist history:', error)
+    }
+  }, [history])
+
+  const characterCount = inputText.length
+  const pageSize = Math.max(1, topLimit)
+
+  const remainingWords = useMemo(() => {
     if (!analysis) {
       return []
     }
+    return analysis.sortedWords.filter(({ lemma }) => !knownWords[lemma])
+  }, [analysis, knownWords])
 
-    return analysis.sortedWords.slice(0, Math.max(1, topLimit))
-  }, [analysis, topLimit])
+  const ensureDefinition = async (lemma: string) => {
+    if (definitions[lemma]) {
+      return definitions[lemma]
+    }
+
+    const offlineDefinition = await lookupWordNetDefinition(lemma)
+    if (offlineDefinition) {
+      setDefinitions((previous) => ({
+        ...previous,
+        [lemma]: offlineDefinition,
+      }))
+      return offlineDefinition
+    }
+
+    const onlineDefinition = await fetchDictionaryApiDefinition(lemma)
+    const resolvedDefinition = onlineDefinition ?? 'Definition not available.'
+    setDefinitions((previous) => ({
+      ...previous,
+      [lemma]: resolvedDefinition,
+    }))
+    return resolvedDefinition
+  }
+
+  const totalRemaining = remainingWords.length
+  const totalPages = totalRemaining ? Math.ceil(totalRemaining / pageSize) : 1
+
+  const paginatedWords = useMemo(() => {
+    if (!remainingWords.length) {
+      return []
+    }
+    const start = currentPage * pageSize
+    return remainingWords.slice(start, start + pageSize)
+  }, [remainingWords, currentPage, pageSize])
+
+  const startRank = totalRemaining === 0 ? 0 : currentPage * pageSize + 1
+  const endRank =
+    totalRemaining === 0 ? 0 : Math.min(totalRemaining, (currentPage + 1) * pageSize)
+
+  const remainingOccurrences = useMemo(
+    () => remainingWords.reduce((total, item) => total + item.count, 0),
+    [remainingWords],
+  )
+
+  const knownWordsList = useMemo(
+    () => Object.keys(knownWords).sort((a, b) => a.localeCompare(b)),
+    [knownWords],
+  )
+
+  const knownWordsPreview = useMemo(
+    () => knownWordsList.slice(0, 60),
+    [knownWordsList],
+  )
+
+  const addHistoryEntry = useCallback(
+    (text: string, analysisResult: AnalysisResult) => {
+      const trimmed = text.trim()
+      if (!trimmed) {
+        return
+      }
+
+      const preview = trimmed.replace(/\s+/g, ' ').slice(0, 160)
+      const entry: HistoryEntry = {
+        id: `${Date.now()}`,
+        text: trimmed,
+        createdAt: Date.now(),
+        summary: `${analysisResult.totalUnique} words | ${preview}${
+          trimmed.length > preview.length ? '…' : ''
+        }`,
+      }
+
+      setHistory((previous) => {
+        const deduped = previous.filter((item) => item.text !== trimmed)
+        return [entry, ...deduped].slice(0, HISTORY_LIMIT)
+      })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    setCurrentPage(0)
+  }, [analysis, pageSize])
+
+  useEffect(() => {
+    const maxPage = Math.max(0, totalPages - 1)
+    if (currentPage > maxPage) {
+      setCurrentPage(maxPage)
+    }
+  }, [currentPage, totalPages])
 
   const handleTextChange = (event: ChangeEvent<HTMLTextAreaElement>) => {
     const nextValue = event.target.value
@@ -514,6 +726,69 @@ function App() {
     reader.readAsText(file)
   }
 
+  const handleToggleKnown = (lemma: string) => {
+    const normalized = lemma.toLowerCase()
+    setKnownWords((previous) => {
+      const alreadyKnown = Boolean(previous[normalized])
+      const next = { ...previous }
+
+      if (alreadyKnown) {
+        delete next[normalized]
+        setStatus({
+          type: 'info',
+          text: `"${lemma}" moved back to the training list.`,
+        })
+      } else {
+        next[normalized] = true
+        setStatus({
+          type: 'info',
+          text: `"${lemma}" saved as a known word. You can restore it from the list below.`,
+        })
+      }
+
+      return next
+    })
+  }
+
+  const loadDefinitionIfNeeded = useCallback(
+    async (lemma: string) => {
+      if (definitionLoadingMap[lemma] || definitions[lemma]) {
+        return
+      }
+      setDefinitionLoadingMap((prev) => ({ ...prev, [lemma]: true }))
+      try {
+        await ensureDefinition(lemma)
+      } catch (error) {
+        console.warn('Unable to load definition for', lemma, error)
+        setDefinitions((previous) => ({
+          ...previous,
+          [lemma]: 'Unable to load definition right now.',
+        }))
+      } finally {
+        setDefinitionLoadingMap((prev) => {
+          const next = { ...prev }
+          delete next[lemma]
+          return next
+        })
+      }
+    },
+    [definitionLoadingMap, definitions],
+  )
+
+  useEffect(() => {
+    paginatedWords.forEach((word) => {
+      loadDefinitionIfNeeded(word.lemma)
+    })
+  }, [paginatedWords, loadDefinitionIfNeeded])
+
+  const handleNextPage = () => {
+    setCurrentPage((previous) => Math.min(previous + 1, Math.max(0, totalPages - 1)))
+  }
+
+  const handlePreviousPage = () => {
+    setCurrentPage((previous) => Math.max(0, previous - 1))
+  }
+
   const handleAnalyze = () => {
     if (!inputText.trim()) {
       setAnalysis(null)
@@ -524,34 +799,50 @@ function App() {
       return
     }
 
+    setDefinitions({})
+    setDefinitionLoadingMap({})
+
     const normalized = inputText.toLowerCase()
     const tokens = normalized.match(/[a-z]+(?:'[a-z]+)?/g) ?? []
-    const difficultWords = new Map<string, number>()
+    const difficultWords = new Map<string, { count: number; verbForms?: VerbForms }>()
 
     tokens.forEach((token) => {
-      if (commonWords.has(token)) {
+      const { lemma, verbForms } = lemmatizeWord(token)
+      if (!lemma || commonWords.has(lemma)) {
         return
       }
-      difficultWords.set(token, (difficultWords.get(token) ?? 0) + 1)
+      const entry = difficultWords.get(lemma) ?? { count: 0 }
+      entry.count += 1
+      if (verbForms) {
+        entry.verbForms = verbForms
+      }
+      difficultWords.set(lemma, entry)
     })
 
     const sortedWords = Array.from(difficultWords.entries())
       .sort((a, b) => {
-        if (b[1] === a[1]) {
+        const countDifference = b[1].count - a[1].count
+        if (countDifference === 0) {
           return a[0].localeCompare(b[0])
         }
-        return b[1] - a[1]
+        return countDifference
       })
-      .map(([word, count]) => ({ word, count }))
+      .map(([lemma, data]) => ({
+        lemma,
+        count: data.count,
+        verbForms: data.verbForms,
+      }))
 
-    setAnalysis({
+    const newAnalysis: AnalysisResult = {
       totalUnique: difficultWords.size,
       totalOccurrences: Array.from(difficultWords.values()).reduce(
-        (total, current) => total + current,
+        (total, current) => total + current.count,
         0,
       ),
       sortedWords,
-    })
+    }
+
+    setAnalysis(newAnalysis)
 
     setStatus({
       type: 'info',
@@ -560,12 +851,60 @@ function App() {
           ? 'All of the words in the sample are part of the common word list.'
           : 'Analysis complete. Focus on the most frequent difficult words below.',
     })
+
+    addHistoryEntry(inputText, newAnalysis)
   }
 
   const handleClear = () => {
     setInputText('')
     setAnalysis(null)
     setStatus(null)
+    setDefinitions({})
+    setDefinitionLoadingMap({})
+  }
+
+  const handleDownloadList = () => {
+    if (!remainingWords.length) {
+      setStatus({
+        type: 'error',
+        text: 'There are no difficult words to download. Run a new analysis or restore known words first.',
+      })
+      return
+    }
+
+    const lines = remainingWords.map(({ lemma }) => {
+      const definition = definitions[lemma]
+      return definition ? `${lemma} — ${definition}` : lemma
+    })
+
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = 'difficult-word-list.txt'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+
+    setStatus({
+      type: 'info',
+      text: `Downloaded ${remainingWords.length} difficult word${
+        remainingWords.length === 1 ? '' : 's'
+      }.`,
+    })
+  }
+
+  const handleLoadHistory = (entry: HistoryEntry) => {
+    setInputText(entry.text)
+    setStatus({
+      type: 'info',
+      text: 'Loaded text from history. Review or edit it before analyzing.',
+    })
+  }
+
+  const handleDeleteHistory = (id: string) => {
+    setHistory((previous) => previous.filter((entry) => entry.id !== id))
   }
 
   return (
@@ -624,6 +963,47 @@ function App() {
           </div>
         </div>
         {status && <p className={`status ${status.type}`}>{status.text}</p>}
+        <div className="history-panel">
+          <div className="history-header">
+            <h3>Recent analyses</h3>
+            <p className="history-caption">
+              The assistant remembers the last {HISTORY_LIMIT} samples on this device.
+            </p>
+          </div>
+          {history.length ? (
+            <ul className="history-list">
+              {history.map((entry) => (
+                <li key={entry.id}>
+                  <div>
+                    <p className="history-date">
+                      {new Date(entry.createdAt).toLocaleString(undefined, {
+                        dateStyle: 'medium',
+                        timeStyle: 'short',
+                      })}
+                    </p>
+                    <p className="history-summary">{entry.summary}</p>
+                  </div>
+                  <div className="history-actions">
+                    <button type="button" onClick={() => handleLoadHistory(entry)}>
+                      Load text
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => handleDeleteHistory(entry.id)}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="history-empty">
+              Run a few analyses to see history here. Your text never leaves the browser.
+            </p>
+          )}
+        </div>
       </section>
 
       <section className="panel results-panel">
@@ -641,30 +1021,112 @@ function App() {
                   {analysis.totalOccurrences.toLocaleString()}
                 </p>
               </article>
+              <article className="stat-card">
+                <p className="stat-label">Words left to study</p>
+                <p className="stat-value">{totalRemaining.toLocaleString()}</p>
+              </article>
+              <article className="stat-card">
+                <p className="stat-label">Occurrences left</p>
+                <p className="stat-value">{remainingOccurrences.toLocaleString()}</p>
+              </article>
             </div>
 
-            {displayedWords.length ? (
+            {totalRemaining ? (
               <>
                 <p className="list-caption">
-                  Top {displayedWords.length} most frequent difficult words. Learn these
-                  first for the biggest payoff.
+                  Click a word to mark it as known. Definitions load automatically under each word
+                  so you can evaluate them quickly.
                 </p>
+                <div className="pagination-row">
+                  <span>
+                    Showing {startRank}–{endRank} of {totalRemaining} words
+                  </span>
+                  <div className="pager">
+                    <button type="button" onClick={handlePreviousPage} disabled={currentPage === 0}>
+                      Previous
+                    </button>
+                    <span className="page-indicator">
+                      Page {totalPages === 0 ? 0 : currentPage + 1} / {totalPages}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleNextPage}
+                      disabled={currentPage >= totalPages - 1}
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
                 <ol className="words-list">
-                  {displayedWords.map((item, index) => (
-                    <li key={item.word}>
-                      <span className="rank">{index + 1}.</span>
-                      <span className="word">{item.word}</span>
-                      <span className="count">{item.count}×</span>
-                    </li>
-                  ))}
+                  {paginatedWords.map((item, index) => {
+                    const definition = definitions[item.lemma]
+                    const loading = Boolean(definitionLoadingMap[item.lemma])
+                    return (
+                      <li key={item.lemma}>
+                        <span className="rank">{startRank + index}.</span>
+                      <div className="word-info">
+                        <div className="word-actions">
+                          <button
+                            type="button"
+                            className="word-button"
+                            title="Click to mark this word as known"
+                            onClick={() => handleToggleKnown(item.lemma)}
+                          >
+                            {item.lemma}
+                          </button>
+                        </div>
+                        {item.verbForms ? (
+                          <p className="word-forms">
+                            {item.verbForms.infinitive}
+                            {item.verbForms.present ? ` · ${item.verbForms.present}` : null}
+                            {item.verbForms.past ? ` · ${item.verbForms.past}` : null}
+                            {item.verbForms.participle
+                              ? ` · ${item.verbForms.participle}`
+                              : null}
+                          </p>
+                        ) : null}
+                        <p className="definition-inline">
+                          {loading
+                            ? 'Loading definition…'
+                            : definition ?? 'Loading definition…'}
+                        </p>
+                      </div>
+                        <span className="count">{item.count}×</span>
+                      </li>
+                    )
+                  })}
                 </ol>
               </>
             ) : (
               <p className="empty-state">
-                Every word in your sample belongs to the common word list. Try a different
-                passage or load a more advanced text.
+                Incredible—every remaining word is now marked as known. Paste a new passage or
+                restore a word if you want to keep practicing.
               </p>
             )}
+
+            {knownWordsList.length ? (
+              <div className="known-words-panel">
+                <p className="list-caption">
+                  Known words ({knownWordsList.length}
+                  {knownWordsList.length > knownWordsPreview.length
+                    ? `, showing ${knownWordsPreview.length}`
+                    : ''}
+                  ). Click one to restore it to the difficult list.
+                </p>
+                <div className="known-words-grid">
+                  {knownWordsPreview.map((word) => (
+                    <button
+                      type="button"
+                      className="known-chip"
+                      key={word}
+                      onClick={() => handleToggleKnown(word)}
+                    >
+                      {word}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </>
         ) : (
           <p className="empty-state">
@@ -672,6 +1134,36 @@ function App() {
           </p>
         )}
       </section>
+
+      <section className="panel study-panel">
+        <h2>3. Export difficult words</h2>
+        {analysis ? (
+          <>
+            <p className="lead">
+              Download the remaining difficult words (with their inline definitions) as a plain-text
+              list. Use this file as a study deck or share it with your tutor.
+            </p>
+            <div className="definition-actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleDownloadList}
+                disabled={!remainingWords.length}
+              >
+                Download study list
+              </button>
+            </div>
+            {!remainingWords.length && (
+              <p className="empty-state">
+                There are no difficult words left to export. Paste new text or restore a known word.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="empty-state">Run an analysis above to generate your study list.</p>
+        )}
+      </section>
+
     </div>
   )
 }
